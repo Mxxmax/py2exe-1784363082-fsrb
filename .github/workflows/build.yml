@@ -1,0 +1,79 @@
+# GitHub Actions: Build .py → .exe via PyInstaller
+name: Build EXE
+
+on:
+  push:
+    branches: [ "main" ]
+
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install openpyxl et_xmlfile pyinstaller
+
+      - name: Build EXE with PyInstaller
+        run: |
+          $files = Get-ChildItem "$env:GITHUB_WORKSPACE" -Filter *.py -Recurse | Where-Object { $_.Name -ne "setup.py" }
+          foreach ($f in $files) {
+            $name = [System.IO.Path]::GetFileNameWithoutExtension($f.Name)
+            $specPath = "$env:RUNNER_TEMP\${name}.spec"
+            $pyCode = @'
+import openpyxl, et_xmlfile
+from pathlib import Path
+op = str(Path(openpyxl.__file__).resolve().parent)
+et = str(Path(et_xmlfile.__file__).resolve().parent)
+lines = [
+    "a = Analysis(",
+    "    [r'FILE_PLACEHOLDER'],",
+    "    pathex=[r'DIR_PLACEHOLDER'],",
+    "    binaries=[], datas=[],",
+    "    hiddenimports=['openpyxl','et_xmlfile'],",
+    "    hookspath=[], hooksconfig={}, runtime_hooks=[],",
+    "    excludes=['IPython','matplotlib','numpy','pandas','PIL','Pillow','scipy','sklearn','tensorflow','torch'],",
+    "    win_no_prefer_redirects=False, win_private_assemblies=False,",
+    "    cipher=None, noarchive=False,",
+    ")",
+    "pyz = PYZ(a.pure, a.zipped_data, cipher=None)",
+    "exe = EXE(",
+    "    pyz, a.scripts,",
+    "    Tree(r'" + op + "', prefix='openpyxl'),",
+    "    Tree(r'" + et + "', prefix='et_xmlfile'),",
+    "    a.binaries, a.zipfiles, a.datas,",
+    "    name='NAME_PLACEHOLDER',",
+    "    debug=False, bootloader_ignore_signals=False,",
+    "    strip=False, upx=True, console=True,",
+    "    disable_windowed_traceback=False, argv_emulation=False,",
+    "    target_arch=None, codesign_identity=None, entitlements_file=None,",
+    ")",
+]
+with open(r'SPEC_PLACEHOLDER', 'w', encoding='utf-8') as f:
+    f.write('# -*- mode: python ; coding: utf-8 -*-\n')
+    f.write('from pathlib import Path\n')
+    f.write('\n'.join(lines))
+    f.write('\n')
+'@
+            $final = $pyCode -replace 'FILE_PLACEHOLDER', $f.Name
+            $final = $final -replace 'DIR_PLACEHOLDER', $f.DirectoryName
+            $final = $final -replace 'NAME_PLACEHOLDER', $name
+            $final = $final -replace 'SPEC_PLACEHOLDER', $specPath
+            python -c $final 2>&1
+            pyinstaller $specPath 2>&1
+          }
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: built-exe
+          path: dist/*.exe
+          if-no-files-found: error
